@@ -4,6 +4,7 @@ output:
   word_document: default
   html_document: default
 date: "2025-05-07"
+author: "Sabin, Idil, Giang"
 ---
 
 ```{r setup, include=FALSE}
@@ -18,6 +19,7 @@ When you click the **Knit** button a document will be generated that includes bo
 
 ```{r cars}
 summary(cars)
+#Sabin
 ```
 
 ## Including Plots
