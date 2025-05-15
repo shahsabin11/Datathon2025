@@ -20,7 +20,16 @@ When you click the **Knit** button a document will be generated that includes bo
 ##Installing packages:
 
 ```{r}
+install.packages("recipes")
+install.packages("caret")
+install.packages("randomForest")
+install.packages("xgboost")
+```
+
+
+```{r}
 install.packages("tidyverse")
+
 ```
 
 ```{r}
@@ -39,12 +48,347 @@ glimpse(Alzheimer)
 
 
 ```{r}
-# Removing unnecessary columns:
+# Removing unnecessary columns: #Don't remove diabetes/BMI it could be important for alzh,combine Cholesterol levels to find categories of high / risky/low cholesterol
+
 
 Alzheimer1 <- Alzheimer %>% 
-  select(-BMI, -EducationLevel, -Diabetes, -HeadInjury, -Hypertension, -SystolicBP, -DiastolicBP, -CholesterolTotal, -CholesterolLDL, -CholesterolHDL, -CholesterolTriglycerides, -MMSE, -FunctionalAssessment)
+  select(-HeadInjury, -SystolicBP, -DiastolicBP)
 
 ```
+
+```{r}
+
+
+# Step 1: Create a combined cholesterol score
+Alzheimer1$CholesterolScore <- with(Alzheimer1, 
+  CholesterolTotal + CholesterolLDL + CholesterolHDL + CholesterolTriglycerides)
+
+# Step 2: Categorize into 5 levels based on percentile ranges or fixed thresholds
+# You can choose thresholds based on quantiles or medical guidance. Here’s one example using quantiles:
+
+# Compute quintiles to use as cut points
+quantiles <- quantile(Alzheimer1$CholesterolScore, probs = seq(0, 1, 0.2), na.rm = TRUE)
+
+# Step 3: Create a categorical column based on those cutoffs
+Alzheimer1$CholesterolLevel <- cut(
+  Alzheimer1$CholesterolScore,
+  breaks = quantiles,
+  include.lowest = TRUE,
+  labels = c("Low", "Mild", "Medium", "Risky", "High")
+)
+
+# Optional: View the distribution
+table(Alzheimer1$CholesterolLevel)
+
+```
+
+
+```{r}
+# Save the dataset as a CSV in the current working directory
+write.csv(Alzheimer1, "Alzheimer.csv", row.names = FALSE)
+
+```
+
+```{r}
+# Convert binary and categorical variables to factors
+factor_cols <- c(
+  "Gender", "Smoking", "FamilyHistoryAlzheimers", "CardiovascularDisease",
+  "Diabetes", "Depression", "Hypertension", "MemoryComplaints",
+  "BehavioralProblems", "Confusion", "Disorientation", "PersonalityChanges",
+  "DifficultyCompletingTasks", "Forgetfulness", "Diagnosis",
+  "EducationLevel", "Ethnicity", "CholesterolLevel"
+)
+
+# Apply conversion
+Alzheimer1[factor_cols] <- lapply(Alzheimer1[factor_cols], factor)
+
+```
+
+```{r}
+library(ggplot2)
+
+# Loop through each categorical variable
+for (col in factor_cols[factor_cols != "Diagnosis"]) {
+  print(
+    ggplot(Alzheimer1, aes_string(x = col, fill = "Diagnosis")) +
+      geom_bar(position = "fill") +
+      scale_y_continuous(labels = scales::percent) +
+      labs(
+        title = paste("Proportion of Alzheimer's Diagnosis by", col),
+        x = col,
+        y = "Proportion of Patients",
+        fill = "Alzheimer's Diagnosis"
+      ) +
+      theme_minimal()
+  )
+}
+
+```
+
+```{r}
+# List of categorical variables to test (excluding Diagnosis itself)
+categorical_vars <- c(
+  "Gender", "Smoking", "FamilyHistoryAlzheimers", "CardiovascularDisease",
+  "Diabetes", "Depression", "Hypertension", "MemoryComplaints",
+  "BehavioralProblems", "Confusion", "Disorientation", "PersonalityChanges",
+  "DifficultyCompletingTasks", "Forgetfulness", "EducationLevel",
+  "Ethnicity", "CholesterolLevel"
+)
+
+# Initialize result storage
+chi_results <- data.frame(
+  Variable = character(),
+  Chi_Square = numeric(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Perform Chi-squared test for each categorical variable vs Diagnosis
+for (var in categorical_vars) {
+  tbl <- table(Alzheimer1[[var]], Alzheimer1$Diagnosis)
+  test <- chisq.test(tbl)
+  
+  chi_results <- rbind(chi_results, data.frame(
+    Variable = var,
+    Chi_Square = round(test$statistic, 4),
+    P_Value = signif(test$p.value, 4)
+  ))
+}
+
+# Sort by significance
+chi_results <- chi_results[order(chi_results$P_Value), ]
+print(chi_results)
+
+```
+
+
+
+
+```{r}
+# Select continuous numeric variables
+numeric_vars <- c(
+  "Age", "BMI", "AlcoholConsumption", "PhysicalActivity", "DietQuality", "SleepQuality",
+  "CholesterolTotal", "CholesterolLDL", "CholesterolHDL", "CholesterolTriglycerides",
+  "MMSE", "FunctionalAssessment", "ADL"
+)
+
+# Create a results data frame
+cor_results <- data.frame(
+  Variable = character(),
+  Correlation = numeric(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each variable and compute Pearson correlation with Diagnosis
+for (var in numeric_vars) {
+  test <- cor.test(Alzheimer1[[var]], as.numeric(as.character(Alzheimer1$Diagnosis)), method = "pearson")
+  cor_results <- rbind(cor_results, data.frame(
+    Variable = var,
+    Correlation = test$estimate,
+    P_Value = test$p.value
+  ))
+}
+
+# View results sorted by correlation magnitude
+cor_results[order(abs(cor_results$Correlation), decreasing = TRUE), ]
+
+```
+
+```{r}
+# Numerical variables to consider:
+
+# Functional Assessment, ADL, MMSE, Sleep Quality
+
+# Categorical variables to consider
+
+# MemoryComplaints, BehavorialProblems, FamilyHistoryAlzheimers, Ethnicity, EducationLevel, CholestrolLevel
+
+```
+
+
+```{r}
+# Buidling the logistic regression model:
+
+# Loading libraries
+
+library(recipes)
+library(caret)
+library(randomForest)
+
+```
+
+
+
+
+```{r}
+# Selected features and target:
+
+selected_vars <- c(
+  "Diagnosis", "FunctionalAssessment", "ADL", "MMSE", "SleepQuality",
+  "MemoryComplaints", "BehavioralProblems", "FamilyHistoryAlzheimers",
+  "Ethnicity", "EducationLevel", "CholesterolLevel"
+)
+
+```
+
+```{r}
+# Model Dataset creation:
+
+model_df <- Alzheimer1[, selected_vars]
+
+
+```
+
+```{r}
+# Splitting the dataset into training and test set (80/20 distribution)
+
+set.seed(2025)
+trainIndex <- createDataPartition(model_df$Diagnosis, p = 0.8, list = FALSE)
+train_data <- model_df[trainIndex, ]
+test_data <- model_df[-trainIndex, ]
+
+
+```
+
+```{r}
+# Setting up tune grid for mtry (randomly selecting variables at each split)
+set.seed(2025)
+tune_grid <- expand.grid(mtry = c(2, 3, 4, 5))
+
+```
+
+```{r}
+# Performing Cross-Validation (CV):
+set.seed(2025)
+ctrl <- trainControl(method = "cv", number = 5)
+```
+
+```{r}
+# Training the random forest with model tuning:
+set.seed(2025)
+rf_tuned <- train(
+  Diagnosis ~ .,
+  data = train_data,
+  method = "rf",
+  tuneGrid = tune_grid,
+  ntree = 500,
+  trControl = ctrl,
+  importance = TRUE
+)
+```
+
+```{r}
+# Printing and plotting the model summary
+set.seed(2025)
+print(rf_tuned)
+plot(rf_tuned)
+
+```
+
+
+```{r}
+# Prediction on the test set:
+set.seed(2025)
+rf_predictions <- predict(rf_tuned, newdata = test_data)
+```
+
+```{r}
+# Evaluating performance through Confusion matrix:
+set.seed(2025)
+conf_matrix <- confusionMatrix(rf_predictions, test_data$Diagnosis)
+print(conf_matrix)
+
+```
+
+```{r}
+
+
+# Extract variable importance
+importance_rf <- varImp(rf_tuned)
+
+# Print importance scores
+print(importance_rf)
+
+# Plot variable importance
+plot(importance_rf, top = 15, main = "Random Forest Variable Importance")
+
+```
+
+
+
+```{r}
+# Load required libraries
+library(tidyverse)
+library(recipes)
+library(caret)
+library(xgboost)
+
+# 1. Load and prepare data
+alz <- Alzheimer1 %>% select(-PatientID, -DoctorInCharge)
+alz$Diagnosis <- factor(alz$Diagnosis, levels = c(0, 1), labels = c("No", "Yes"))
+
+# 2. Split
+set.seed(2087)
+split_index <- createDataPartition(alz$Diagnosis, p = 0.7, list = FALSE)
+alz_train <- alz[split_index, ]
+alz_test <- alz[-split_index, ]
+
+# 3. Preprocessing recipe
+xgb_recipe <- recipe(Diagnosis ~ ., data = alz_train) %>%
+  step_impute_knn(all_predictors()) %>%
+  step_integer(all_nominal_predictors()) %>%
+  step_center(all_numeric(), -all_outcomes()) %>%
+  step_scale(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal_predictors())
+
+# 4. Prepare recipe
+prep_xgb <- prep(xgb_recipe, training = alz_train)
+xgb_train <- bake(prep_xgb, new_data = alz_train)
+xgb_test <- bake(prep_xgb, new_data = alz_test)
+
+# 5. Set up training control with specificity as the optimization metric
+ctrl <- trainControl(
+  method = "cv", number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# 6. Define parameter grid
+grid <- expand.grid(
+  nrounds = c(100, 200),
+  max_depth = c(3, 5, 7),
+  eta = c(0.05, 0.1, 0.3),
+  gamma = c(0, 1),
+  colsample_bytree = c(0.6, 0.8),
+  min_child_weight = c(1, 5),
+  subsample = c(0.7, 1)
+)
+
+# 7. Train XGBoost model with tuning
+set.seed(123)
+xgb_model <- train(
+  Diagnosis ~ ., data = xgb_train,
+  method = "xgbTree",
+  metric = "Spec",  # optimize for specificity
+  trControl = ctrl,
+  tuneGrid = grid
+)
+
+# 8. Evaluate
+xgb_preds <- predict(xgb_model, newdata = xgb_test)
+confusionMatrix(xgb_preds, xgb_test$Diagnosis)
+
+# 9. ROC curve
+library(pROC)
+xgb_probs <- predict(xgb_model, newdata = xgb_test, type = "prob")[, "Yes"]
+roc_xgb <- roc(xgb_test$Diagnosis, xgb_probs, levels = c("No", "Yes"))
+plot(roc_xgb, col = "darkred", lwd = 2, main = "ROC Curve - XGBoost")
+legend("bottomright", legend = paste("AUC =", round(auc(roc_xgb), 3)), col = "darkred", lwd = 2)
+
+```
+
 
 ## Including Plots
 
