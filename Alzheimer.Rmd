@@ -24,6 +24,12 @@ install.packages("recipes")
 install.packages("caret")
 install.packages("randomForest")
 install.packages("xgboost")
+install.packages("ggrepel")
+install.packages("ggalt")
+```
+
+
+```{r}
 ```
 
 
@@ -38,6 +44,8 @@ library(tidyverse)
 ```{r}
 #Loading the dataset into the environment
 Alzheimer <- read.csv("alzheimers_disease_data.csv")
+Medicare_Statewise <- read.csv("Medicare_Statewise_Data.csv")
+Alzheimer_Cost <- read.csv("Alzheimers_Costs_By_Payment_Source.csv")
 
 ```
 
@@ -315,87 +323,119 @@ plot(importance_rf, top = 15, main = "Random Forest Variable Importance")
 
 ```
 
-
-
 ```{r}
-# Load required libraries
-library(tidyverse)
-library(recipes)
-library(caret)
-library(xgboost)
 
-# 1. Load and prepare data
-alz <- Alzheimer1 %>% select(-PatientID, -DoctorInCharge)
-alz$Diagnosis <- factor(alz$Diagnosis, levels = c(0, 1), labels = c("No", "Yes"))
+summary(Medicare_Statewise)
+```
+```{r}
+# Renaming a few columns:
+library(dplyr)
 
-# 2. Split
-set.seed(2087)
-split_index <- createDataPartition(alz$Diagnosis, p = 0.7, list = FALSE)
-alz_train <- alz[split_index, ]
-alz_test <- alz[-split_index, ]
+Medicare_Statewise <- Medicare_Statewise %>%
+  rename(
+    ED_Visits_per_1000_Ben = ED.Visits.per.1.000.Beneficiaries,
+    Readmission_30_Days = Hospital.Readmission.within.30.Days....
+  )
 
-# 3. Preprocessing recipe
-xgb_recipe <- recipe(Diagnosis ~ ., data = alz_train) %>%
-  step_impute_knn(all_predictors()) %>%
-  step_integer(all_nominal_predictors()) %>%
-  step_center(all_numeric(), -all_outcomes()) %>%
-  step_scale(all_numeric(), -all_outcomes()) %>%
-  step_dummy(all_nominal_predictors())
+glimpse(Medicare_Statewise)
 
-# 4. Prepare recipe
-prep_xgb <- prep(xgb_recipe, training = alz_train)
-xgb_train <- bake(prep_xgb, new_data = alz_train)
-xgb_test <- bake(prep_xgb, new_data = alz_test)
 
-# 5. Set up training control with specificity as the optimization metric
-ctrl <- trainControl(
-  method = "cv", number = 5,
-  classProbs = TRUE,
-  summaryFunction = twoClassSummary,
-  savePredictions = "final"
-)
+```
+```{r}
+# Converting ED_Visits into percentage:
+library(dplyr)
 
-# 6. Define parameter grid
-grid <- expand.grid(
-  nrounds = c(100, 200),
-  max_depth = c(3, 5, 7),
-  eta = c(0.05, 0.1, 0.3),
-  gamma = c(0, 1),
-  colsample_bytree = c(0.6, 0.8),
-  min_child_weight = c(1, 5),
-  subsample = c(0.7, 1)
-)
-
-# 7. Train XGBoost model with tuning
-set.seed(123)
-xgb_model <- train(
-  Diagnosis ~ ., data = xgb_train,
-  method = "xgbTree",
-  metric = "Spec",  # optimize for specificity
-  trControl = ctrl,
-  tuneGrid = grid
-)
-
-# 8. Evaluate
-xgb_preds <- predict(xgb_model, newdata = xgb_test)
-confusionMatrix(xgb_preds, xgb_test$Diagnosis)
-
-# 9. ROC curve
-library(pROC)
-xgb_probs <- predict(xgb_model, newdata = xgb_test, type = "prob")[, "Yes"]
-roc_xgb <- roc(xgb_test$Diagnosis, xgb_probs, levels = c("No", "Yes"))
-plot(roc_xgb, col = "darkred", lwd = 2, main = "ROC Curve - XGBoost")
-legend("bottomright", legend = paste("AUC =", round(auc(roc_xgb), 3)), col = "darkred", lwd = 2)
+# Normalize ED visits to percentage scale (0–100%)
+Medicare_Statewise <- Medicare_Statewise %>%
+  mutate(ED_Visits_Percent = 100 * (ED_Visits_per_1000_Ben - min(ED_Visits_per_1000_Ben)) / 
+                                   (max(ED_Visits_per_1000_Ben) - min(ED_Visits_per_1000_Ben)))
 
 ```
 
+```{r}
+library(tidyr)
+
+df_long <- Medicare_Statewise %>%
+  select(State, ED_Visits_Percent, Readmission_30_Days) %>%
+  pivot_longer(cols = c(ED_Visits_Percent, Readmission_30_Days),
+               names_to = "Metric", values_to = "Value")
+
+```
+
+
+
+```{r}
+library(ggplot2)
+library(ggalt)  # for geom_dumbbell
+
+# Creating dumbbell chart
+df_dumbbell <- Medicare_Statewise %>%
+  select(State, ED_Visits_Percent, Readmission_30_Days)
+
+ggplot(df_dumbbell, aes(y = reorder(State, ED_Visits_Percent))) +
+  geom_dumbbell(
+    aes(x = Readmission_30_Days, xend = ED_Visits_Percent),
+    color = "gray80", size = 1,
+    colour_x = "orange", colour_xend = "steelblue"
+  ) +
+  labs(
+    title = "Comparison of ED Visits and Readmission Rates by State",
+    x = "Percentage",
+    y = "State"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+```{r}
+# Renaming the column for Benficiaries with and without Alzheimer
+Alzheimer_Cost <- Alzheimer_Cost %>%
+  rename(
+    `Beneficiaries with Alzheimer` = `Beneficiaries.with.Alzheimer.s.or.Other.Dementias`,
+    `Beneficiaries without Alzheimer` = `Beneficiaries.without.Alzheimer.s.or.Other.Dementias`,
+    `Payment Source` = `Payment.Source`
+  )
+```
+
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# Convert from wide to long format
+Alzheimer_Cost_long <- Alzheimer_Cost %>%
+  pivot_longer(
+    cols = c(`Beneficiaries with Alzheimer`, `Beneficiaries without Alzheimer`),
+    names_to = "Group",
+    values_to = "Cost"
+  )
+
+# Create grouped bar chart
+ggplot(Alzheimer_Cost_long, aes(x = reorder(`Payment Source`, -Cost), y = Cost, fill = Group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Cost Comparison by Payment Source for Alzheimer’s and Non-Alzheimer’s Beneficiaries",
+    x = "Payment Source",
+    y = "Cost (USD)",
+    fill = "Group"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
 
 ## Including Plots
 
 You can also embed plots, for example:
 
 ```{r pressure, echo=FALSE}
-plot(pressure)
+
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
